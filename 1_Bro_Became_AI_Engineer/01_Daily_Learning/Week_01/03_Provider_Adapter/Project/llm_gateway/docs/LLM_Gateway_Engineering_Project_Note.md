@@ -1,31 +1,73 @@
 # LLM Gateway
-## Engineering Project Note
 
-> **Invariant:** application use cases depend on an LLM contract, not on a provider SDK.
->
-> **Pipeline:** **RECEIVE → CONFIGURE → RESOLVE → ADAPT → EXECUTE → RETURN**
+**Engineering Project Note**
+
+> **Invariant:** Application use cases depend on an LLM contract, not on a provider SDK.
+
+```mermaid
+flowchart LR
+    LOAD["Load Settings"] --> RECEIVE["Receive Prompt"]
+    RECEIVE --> CONSTRUCT["Construct Adapter"]
+    CONSTRUCT --> INJECT["Inject Dependency"]
+    INJECT --> EXECUTE["Execute Request"]
+    EXECUTE --> RETURN["Return Text"]
+```
+
+This note documents the architecture, design decisions, implementation boundaries, testing strategy, production considerations, and learning outcomes of the uploaded repository. Status statements are grounded in the repository files; runtime success still depends on installed dependencies, valid credentials, and provider availability.
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [1. Project Overview](#1-project-overview)
+- [2. Problem Statement](#2-problem-statement)
+- [3. Architecture](#3-architecture)
+- [4. Project Structure](#4-project-structure)
+- [5. Provider Adapter Model](#5-provider-adapter-model)
+- [6. Components](#6-components)
+- [7. Request Execution Pipeline](#7-request-execution-pipeline)
+- [8. Async Execution](#8-async-execution)
+- [9. Configuration and Provider Resolution](#9-configuration-and-provider-resolution)
+- [10. CLI Usage](#10-cli-usage)
+- [11. Design Principles](#11-design-principles)
+- [12. Design Decisions](#12-design-decisions)
+- [13. Testing Strategy](#13-testing-strategy)
+- [14. Error Boundary](#14-error-boundary)
+- [15. Security and Data Handling](#15-security-and-data-handling)
+- [16. Production Considerations](#16-production-considerations)
+- [17. Integration With Related Projects](#17-integration-with-related-projects)
+- [18. Evaluation Boundary](#18-evaluation-boundary)
+- [19. Current Limitations](#19-current-limitations)
+- [20. Future Improvements](#20-future-improvements)
+- [21. Key Takeaways](#21-key-takeaways)
+- [22. Learning Outcomes](#22-learning-outcomes)
+- [23. Project Completion Gate](#23-project-completion-gate)
+- [24. Final Recall Map](#24-final-recall-map)
+- [25. Interview Recall](#25-interview-recall)
+- [26. Project Status](#26-project-status)
+
+</details>
 
 ---
 
-# 1. Project Overview
+## 1. Project Overview
 
-LLM Gateway is a lightweight Python application that demonstrates the **Provider Adapter Pattern** for Large Language Models (LLMs).
+LLM Gateway is a lightweight Python application that demonstrates the **Provider Adapter Pattern** for large language models (LLMs).
 
 The project separates application behavior from provider-specific integration code. Instead of importing and calling a model SDK directly inside the use case, the application communicates through an abstract contract named `LLMPort`.
 
-The current implementation uses a concrete `GeminiAdapter` to communicate with Google Gemini. Because the application depends on the port rather than the adapter, another provider can be introduced without rewriting the core text-generation workflow.
+The current implementation uses `GeminiAdapter` to communicate with Google Gemini. `GenerateText` depends on the `LLMPort` contract, so an additional adapter can be introduced without rewriting the use case; the current CLI still requires a provider-resolution change to select it.
 
-The implemented flow:
+The current request flow:
 
+- loads environment-based settings when the infrastructure settings module is imported,
 - accepts a prompt through a Typer CLI,
-- loads environment-based settings,
-- constructs the configured provider adapter,
-- injects the adapter into the application use case,
-- sends the prompt through `LLMPort`,
-- executes the provider-specific request,
-- returns the generated text to the interface.
+- constructs `GeminiAdapter` directly,
+- injects the adapter into `GenerateText`,
+- calls the provider through the `LLMPort` contract,
+- validates that the prompt and provider text are non-empty,
+- returns the generated string to the CLI.
 
-## Scope
+### Scope
 
 | Capability | Current Behavior |
 |---|---|
@@ -36,9 +78,9 @@ The implemented flow:
 | Dependency injection | A concrete adapter is supplied to the use case |
 | Execution model | Provider calls are asynchronous |
 | Delivery | Typer-based command-line interface |
-| Tests | Settings configuration and adapter initialization |
+| Tests | Settings configuration and a credentialed live Gemini generation test |
 | Provider support | Google Gemini |
-| Future direction | OpenAI, Groq, Anthropic, and other adapters |
+| Future direction | Configuration-driven provider resolution and additional adapters |
 
 The current project is intentionally narrow. It demonstrates provider decoupling and application structure rather than a complete production gateway platform.
 
@@ -46,7 +88,7 @@ Explicit non-goals in the current version include provider failover, request rou
 
 ---
 
-# 2. Problem Statement
+## 2. Problem Statement
 
 Directly calling an LLM provider SDK from application code creates avoidable architectural coupling.
 
@@ -64,56 +106,49 @@ Directly calling an LLM provider SDK from application code creates avoidable arc
 
 A tightly coupled implementation often looks like this:
 
-```text
-CLI
- ↓
-Gemini SDK
- ↓
-Gemini API
+```mermaid
+flowchart LR
+    CLI["CLI or Use Case"] --> SDK["Gemini SDK"]
+    SDK --> API["Gemini API"]
 ```
 
 In that structure, the CLI or use case must understand provider credentials, model configuration, SDK methods, request syntax, and response objects.
 
 LLM Gateway introduces an explicit boundary:
 
-```text
-user prompt
-    ↓
-interface
-    ↓
-application use case
-    ↓
-LLMPort
-    ↓
-provider adapter
-    ↓
-provider API
+```mermaid
+flowchart LR
+    PROMPT["User Prompt"] --> INTERFACE["Interface"]
+    INTERFACE --> USECASE["Application Use Case"]
+    USECASE --> PORT["LLMPort"]
+    PORT --> ADAPTER["Provider Adapter"]
+    ADAPTER --> API["Provider API"]
 ```
 
 The application owns the use case.
 
-The adapter owns provider translation.
+The adapter owns provider-specific translation.
 
 The provider SDK remains an infrastructure detail.
 
 ---
 
-# 3. Architecture
+## 3. Architecture
 
 ```mermaid
 flowchart TD
+    ENV[".env / Process Environment"] --> SETTINGS["settings.py<br/>global Settings instance"]
     USER["User"] --> CLI["Typer CLI"]
-    CLI --> SETTINGS["Environment Settings"]
-    CLI --> APP["GenerateText Use Case"]
-    SETTINGS --> ADAPTER["GeminiAdapter"]
-    APP --> PORT["LLMPort Protocol"]
-    ADAPTER -. "implements" .-> PORT
-    APP --> ADAPTER
-    ADAPTER --> SDK["Gemini SDK"]
+    CLI -->|constructs| ADAPTER["GeminiAdapter"]
+    CLI -->|injects| APP["GenerateText Use Case"]
+    APP -->|depends on| PORT["LLMPort Protocol"]
+    ADAPTER -. "structurally satisfies" .-> PORT
+    SETTINGS -->|API key| ADAPTER
+    ADAPTER --> SDK["Google GenAI SDK"]
     SDK --> API["Gemini API"]
-    API --> ADAPTER
-    ADAPTER --> APP
-    APP --> CLI
+    API --> SDK --> ADAPTER
+    ADAPTER -->|str| APP
+    APP -->|str| CLI
     CLI --> USER
 ```
 
@@ -121,17 +156,13 @@ The implementation follows a simplified Clean Architecture dependency rule:
 
 > Application policy may depend on abstractions. Infrastructure details implement those abstractions.
 
-## Dependency Direction
+### Dependency Direction
 
-```text
-Interfaces
-    ↓
-Application
-    ↓
-Ports
-
-Infrastructure
-    └── implements Ports
+```mermaid
+flowchart LR
+    INTERFACES["Interfaces"] --> APPLICATION["Application"]
+    APPLICATION --> PORTS["Ports"]
+    INFRA["Infrastructure"] -. "implements" .-> PORTS
 ```
 
 The important distinction is between **source-code dependency direction** and **runtime execution direction**.
@@ -146,7 +177,7 @@ flowchart LR
     ADAPTER --> PROVIDER["External Provider"]
 ```
 
-## Layer Responsibilities
+### Layer Responsibilities
 
 | Layer | Responsibility | Excludes |
 |---|---|---|
@@ -156,18 +187,20 @@ flowchart LR
 | Infrastructure | Implements provider communication and configuration | Application orchestration |
 | Interfaces | Receives user input and presents output | Provider-specific request logic |
 
-The application layer never needs to know whether the active implementation uses Gemini, OpenAI, Groq, Anthropic, a local model, or a test double.
+The application layer is structured so it does not need to know whether an implementation uses Gemini, another provider, a local model, or a test double.
 
 ---
 
-# 4. Project Structure
+## 4. Project Structure
 
 ```text
-llm-gateway/
+llm_gateway/
 ├── docs/
-│   └── PROJECT_NOTE.md
+│   └── LLM_Gateway_Engineering_Project_Note.md
 ├── evals/
 ├── tests/
+│   ├── test_gemini.py
+│   └── test_settings.py
 ├── src/
 │   └── llm_gateway/
 │       ├── application/
@@ -180,11 +213,12 @@ llm-gateway/
 │       │   └── cli.py
 │       └── ports/
 │           └── llm.py
+├── .gitignore
 ├── README.md
 └── pyproject.toml
 ```
 
-## Directory Responsibilities
+### Directory Responsibilities
 
 | Path | Responsibility |
 |---|---|
@@ -205,7 +239,7 @@ Each directory represents a reason for change.
 | Text-generation workflow changes | `application/` |
 | Provider contract changes | `ports/` |
 | Gemini SDK changes | `infrastructure/gemini_adapter.py` |
-| Environment settings change | `infrastructure/settings.py` |
+| Environment configuration changes | `infrastructure/settings.py` |
 | CLI commands or output change | `interfaces/cli.py` |
 | Provider-independent model concepts | `domain/` |
 
@@ -213,23 +247,26 @@ Directory responsibilities should remain stable even if filenames evolve.
 
 ---
 
-# 5. Provider Adapter Model
+## 5. Provider Adapter Model
 
-The central design separates three concepts:
+The design separates application intent from provider implementation:
 
-```text
-Use Case
-   ↓ depends on
-Port
-   ↑ implemented by
-Adapter
+```mermaid
+flowchart LR
+    USECASE["GenerateText Use Case"] -->|depends on| PORT["LLMPort"]
+    ADAPTER["GeminiAdapter"] -. "implements" .-> PORT
+    ADAPTER -->|uses| SDK["Google GenAI SDK"]
+    SDK --> API["Gemini API"]
 ```
 
-## Port
+| Element | Responsibility | Must Not Expose |
+|---|---|---|
+| `GenerateText` | Coordinates the application workflow | Provider SDK types or credentials |
+| `LLMPort` | Defines the capability required by the application | Provider construction or configuration |
+| `GeminiAdapter` | Translates the port operation into Gemini-specific behavior | Gemini response objects outside infrastructure |
+| Gemini SDK | Performs provider-specific transport and API operations | Application policy |
 
-`LLMPort` describes the capability needed by the application.
-
-Conceptually:
+Conceptually, the application speaks in provider-independent terms:
 
 ```python
 from typing import Protocol
@@ -240,75 +277,38 @@ class LLMPort(Protocol):
         ...
 ```
 
-The port communicates application intent:
-
-```text
-Generate text from this prompt.
-```
-
-It should not expose unnecessary provider concepts such as SDK clients, provider response objects, transport sessions, or authentication classes.
-
-## Adapter
-
-`GeminiAdapter` translates the provider-independent operation into Gemini-specific behavior.
-
-Conceptually:
+The adapter translates that operation into provider-specific behavior:
 
 ```python
 class GeminiAdapter:
     async def generate(self, prompt: str) -> str:
-        # Translate the application request
-        # Call Gemini
-        # Translate the provider response
-        # Return application-level text
+        # Build the Gemini request.
+        # Execute the provider call.
+        # Extract and return application-level text.
         ...
 ```
 
-## Provider SDK
+### Why a Protocol?
 
-The SDK is an external dependency used only inside infrastructure.
-
-```text
-Application language:
-generate(prompt) -> text
-
-Gemini language:
-configure client
-select model
-construct request
-await SDK operation
-extract provider response text
-```
-
-The adapter performs this translation.
-
-## Why a Protocol?
-
-Python Protocols support structural typing.
-
-A concrete class can satisfy `LLMPort` by implementing the required method shape, without inheriting from a shared base class.
+Python Protocols support structural typing. A concrete class satisfies `LLMPort` by implementing the required method shape; inheritance from a shared base class is not required.
 
 This provides:
 
 - low coupling,
 - clear application contracts,
 - simple test doubles,
-- flexible adapter implementation,
+- flexible adapter implementations,
 - static type-checking support.
 
 A Protocol defines what the application needs, not how a provider must be built.
 
 ---
 
-# 6. Components
+## 6. Components
 
-## 6.1 Application Use Case
+### 6.1 Application Use Case
 
-The current application use case is:
-
-```text
-GenerateText
-```
+The current application use case is `GenerateText`.
 
 Its responsibility is to coordinate text generation through the port.
 
@@ -341,13 +341,9 @@ A narrow use case is easier to test because a fake implementation of `LLMPort` c
 
 ---
 
-## 6.2 LLM Port
+### 6.2 LLM Port
 
-The current port is:
-
-```text
-LLMPort
-```
+The current port is `LLMPort`.
 
 Responsibilities:
 
@@ -367,13 +363,9 @@ If future requirements introduce embeddings, structured output, image generation
 
 ---
 
-## 6.3 Gemini Adapter
+### 6.3 Gemini Adapter
 
-The current concrete adapter is:
-
-```text
-GeminiAdapter
-```
+The current concrete adapter is `GeminiAdapter`.
 
 Responsibilities:
 
@@ -399,26 +391,25 @@ When the Gemini SDK changes, most required modifications should remain inside th
 
 ---
 
-## 6.4 Settings
+### 6.4 Settings
 
 Application settings are loaded from `.env` or the process environment.
 
 Current configuration:
 
-| Variable | Purpose |
+| Variable | Current Use |
 |---|---|
-| `GEMINI_API_KEY` | Authenticates requests to Gemini |
-| `LLM_PROVIDER` | Identifies the selected provider |
-| `LLM_TIMEOUT_SECONDS` | Defines the intended request timeout policy |
+| `GEMINI_API_KEY` | Used by `GeminiAdapter` to construct the Google GenAI client |
+| `GROQ_API_KEY` | Loaded by `Settings`, but no Groq adapter currently consumes it |
+| `LLM_PROVIDER` | Loaded with a default of `gemini`, but does not yet drive provider resolution |
+| `LLM_TIMEOUT_SECONDS` | Parsed as an integer, but not yet enforced by the adapter |
 
 Configuration separates deployment values from source code.
 
-```text
-source code
-    +
-environment configuration
-    =
-runtime behavior
+```mermaid
+flowchart LR
+    CODE["Source Code"] --> RUNTIME["Runtime Behavior"]
+    CONFIG["Environment Configuration"] --> RUNTIME
 ```
 
 Settings should provide:
@@ -431,38 +422,38 @@ Settings should provide:
 
 Secrets must not be committed to source control.
 
-Recommended files:
+Recommended repository files:
 
 ```text
-.env              # local secret values; ignored by Git
-.env.example      # documented variable names; no real secrets
+.env              # local secret values; never publish
+.env.example      # documented variable names; placeholders only
 ```
+
+> **Repository safety note:** The uploaded archive contains a `.env` file, while the uploaded `.gitignore` does not currently exclude `.env`. Remove the file before publishing the repository, add `.env` to `.gitignore`, and rotate any credential that may have been committed.
 
 ---
 
-## 6.5 Typer CLI
+### 6.5 Typer CLI
 
 The current interface is a Typer command-line application.
 
-Responsibilities:
+Current responsibilities:
 
 - receive the prompt,
-- load or receive application dependencies,
-- invoke `GenerateText`,
-- display the generated result,
-- present user-facing failures.
+- construct `GeminiAdapter`,
+- inject the adapter into `GenerateText`,
+- run the asynchronous use case with `asyncio.run`,
+- display the generated result.
 
-```text
-CLI input
-    ↓
-application input
-    ↓
-use-case execution
-    ↓
-application result
-    ↓
-CLI output
+```mermaid
+flowchart LR
+    INPUT["CLI Input"] --> COMPOSE["Construct Adapter and Use Case"]
+    COMPOSE --> EXECUTE["Execute GenerateText"]
+    EXECUTE --> RESULT["Application Result"]
+    RESULT --> OUTPUT["CLI Output"]
 ```
+
+The current CLI does not yet translate exceptions into user-friendly terminal errors.
 
 The CLI is a delivery mechanism, not the owner of provider logic.
 
@@ -470,16 +461,15 @@ A future FastAPI endpoint, background worker, scheduled job, or desktop interfac
 
 ---
 
-## 6.6 Dependency Composition
+### 6.6 Dependency Composition
 
 The application requires a concrete object at runtime even though it depends on an abstraction in design.
 
 Dependency composition connects the layers:
 
 ```python
-settings = Settings()
-adapter = GeminiAdapter(settings=settings)
-use_case = GenerateText(llm=adapter)
+provider = GeminiAdapter()
+use_case = GenerateText(provider)
 result = await use_case.execute(prompt)
 ```
 
@@ -487,7 +477,8 @@ This wiring should occur at the application boundary or composition root.
 
 ```mermaid
 flowchart TD
-    CONFIG["Load Settings"] --> CREATE["Create GeminiAdapter"]
+    IMPORT["Import infrastructure modules"] --> SETTINGS["Load global Settings"]
+    SETTINGS --> CREATE["Create GeminiAdapter"]
     CREATE --> INJECT["Inject into GenerateText"]
     INJECT --> EXECUTE["Execute Use Case"]
 ```
@@ -498,50 +489,61 @@ The use case is not.
 
 ---
 
-# 7. Request Execution Pipeline
+## 7. Request Execution Pipeline
 
 ```mermaid
-flowchart TD
-    A["Prompt Argument"] --> B["Typer CLI"]
-    B --> C["Load Settings"]
-    C --> D["Resolve Provider Adapter"]
-    D --> E["Create GenerateText Use Case"]
-    E --> F["Call LLMPort"]
-    F --> G["Translate Provider Request"]
-    G --> H["Gemini API"]
-    H --> I["Receive Provider Response"]
-    I --> J["Extract Text"]
-    J --> K["Return Application Result"]
-    K --> L["Display CLI Output"]
+sequenceDiagram
+    participant User
+    participant CLI as Typer CLI
+    participant Settings as Global Settings
+    participant UseCase as GenerateText
+    participant Adapter as GeminiAdapter
+    participant SDK as Google GenAI SDK
+    participant Gemini as Gemini API
+
+    Note over CLI,Settings: Settings load when infrastructure modules are imported
+    User->>CLI: Submit prompt
+    CLI->>Adapter: GeminiAdapter()
+    Adapter->>Settings: Read GEMINI_API_KEY
+    Settings-->>Adapter: Return configured key
+    CLI->>UseCase: GenerateText(adapter)
+    CLI->>UseCase: execute(prompt)
+    UseCase->>Adapter: generate(prompt)
+    Adapter->>Adapter: Validate non-empty prompt
+    Adapter->>SDK: await generate_content(...)
+    SDK->>Gemini: Provider request
+    Gemini-->>SDK: Provider response
+    SDK-->>Adapter: Response object
+    Adapter->>Adapter: Validate response.text
+    Adapter-->>UseCase: Return str
+    UseCase-->>CLI: Return str
+    CLI-->>User: Print text
 ```
 
-## Sequence
+### Sequence
 
-1. The user submits a prompt through the CLI.
-2. The interface loads validated environment configuration.
-3. The application creates or resolves the selected provider adapter.
-4. The adapter is injected into `GenerateText`.
-5. The use case calls the `LLMPort` operation.
-6. `GeminiAdapter` translates the call into Gemini-specific SDK behavior.
-7. The provider returns its response.
-8. The adapter extracts provider-independent text.
-9. The use case returns the text.
-10. The CLI displays the result.
+1. Importing the infrastructure modules loads the global `Settings` instance.
+2. The user submits a prompt through the CLI.
+3. The CLI constructs `GeminiAdapter` directly.
+4. The adapter reads `GEMINI_API_KEY` from the global settings object.
+5. The CLI injects the adapter into `GenerateText`.
+6. The use case calls `generate(prompt)` through the `LLMPort` contract.
+7. `GeminiAdapter` rejects an empty prompt, awaits the Gemini SDK, and rejects an empty response.
+8. The normalized string returns through the use case to the CLI.
 
-## Boundary Rule
+### Boundary Rule
 
-```text
-CLI input ≠ provider request object
-provider response object ≠ application result
-```
+| Boundary Input | Boundary Output |
+|---|---|
+| CLI string | Application prompt |
+| Application prompt | Gemini SDK request |
+| Gemini response object | Provider-independent `str` |
 
-Translation occurs at boundaries.
-
-This prevents the provider SDK from becoming the application’s internal data model.
+Translation occurs at system boundaries, preventing the provider SDK from becoming the application’s internal data model.
 
 ---
 
-# 8. Async Execution
+## 8. Async Execution
 
 The provider call is asynchronous because network operations spend most of their time waiting for external I/O.
 
@@ -570,7 +572,7 @@ Async does not automatically provide:
 
 Those behaviors require explicit policy.
 
-## Async Boundary
+### Async Boundary
 
 | Component | Expected Async Behavior |
 |---|---|
@@ -585,16 +587,14 @@ The async contract should follow the I/O path rather than spreading into compone
 
 ---
 
-# 9. Configuration and Provider Resolution
+## 9. Configuration and Provider Resolution
 
-The current project defines `LLM_PROVIDER`, but the initial implementation supports Gemini only.
+The current project defines `LLM_PROVIDER`, but the CLI does not use it to resolve an adapter. Gemini is constructed directly.
 
-A basic current resolution model is:
-
-```text
-LLM_PROVIDER=gemini
-        ↓
-create GeminiAdapter
+```mermaid
+flowchart LR
+    CLI["Typer CLI"] -->|direct construction| GEMINI["GeminiAdapter"]
+    PROVIDER["LLM_PROVIDER"] -. "loaded but not consumed" .-> CLI
 ```
 
 A future provider factory may support:
@@ -614,7 +614,7 @@ Provider resolution belongs in the composition layer.
 
 It should not be placed inside `GenerateText`.
 
-## Configuration Policy
+### Configuration Policy
 
 | Condition | Recommended Behavior |
 |---|---|
@@ -630,32 +630,7 @@ A settings object should convert raw strings into validated application configur
 
 ---
 
-# 10. CLI Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant CLI
-    participant Settings
-    participant UseCase as GenerateText
-    participant Port as LLMPort
-    participant Adapter as GeminiAdapter
-    participant Gemini as Gemini API
-
-    User->>CLI: Submit prompt
-    CLI->>Settings: Load configuration
-    Settings-->>CLI: Valid settings
-    CLI->>Adapter: Construct adapter
-    CLI->>UseCase: Inject adapter
-    CLI->>UseCase: Execute prompt
-    UseCase->>Port: generate(prompt)
-    Port->>Adapter: Runtime implementation
-    Adapter->>Gemini: Async provider request
-    Gemini-->>Adapter: Provider response
-    Adapter-->>UseCase: Generated text
-    UseCase-->>CLI: Application result
-    CLI-->>User: Display text
-```
+## 10. CLI Usage
 
 Run the CLI:
 
@@ -671,41 +646,41 @@ Hello! How can I help you today?
 
 The exact response is provider-generated and may vary between executions.
 
-The CLI proves end-to-end wiring, but a successful CLI response alone does not verify architecture, failure behavior, cost control, output quality, or production reliability.
+The CLI demonstrates end-to-end dependency wiring. A successful response alone does not verify architecture conformance, failure behavior, cost control, output quality, or production reliability.
 
 ---
 
-# 11. Design Principles
+## 11. Design Principles
 
-## Clean Architecture
+### Clean Architecture
 
 The project separates application policy from delivery and provider details.
 
-```text
-policy
-  ↓
-abstraction
-  ↑
-detail
+```mermaid
+flowchart LR
+    POLICY["Application Policy"] --> ABSTRACTION["LLMPort Abstraction"]
+    DETAIL["Gemini Infrastructure Detail"] -. "implements" .-> ABSTRACTION
 ```
 
 The stable part of the system should not depend on the most volatile part.
 
 Provider SDKs, API versions, authentication mechanisms, and response formats may change frequently. The application use case should remain comparatively stable.
 
-## Dependency Inversion Principle
+### Dependency Inversion Principle
 
 High-level application logic should not depend directly on a low-level provider module.
 
 Both communicate through an abstraction:
 
-```text
-GenerateText → LLMPort ← GeminiAdapter
+```mermaid
+flowchart LR
+    USECASE["GenerateText"] --> PORT["LLMPort"]
+    ADAPTER["GeminiAdapter"] -. "implements" .-> PORT
 ```
 
 The arrow represents source-code dependency.
 
-## Separation of Concerns
+### Separation of Concerns
 
 | Concern | Owner |
 |---|---|
@@ -716,21 +691,25 @@ The arrow represents source-code dependency.
 | Load environment values | Settings |
 | Select concrete dependencies | Composition root |
 
-## Dependency Injection
+### Dependency Injection
 
 The use case receives its dependency rather than constructing it internally.
 
-```text
-Preferred:
-GenerateText(llm=adapter)
+```mermaid
+flowchart TB
+    subgraph Preferred["Preferred: dependency injection"]
+        COMPOSITION["Composition Root"] --> ADAPTER["GeminiAdapter"]
+        COMPOSITION --> USECASE["GenerateText(adapter)"]
+    end
 
-Avoid:
-GenerateText creates GeminiAdapter itself
+    subgraph Avoid["Avoid: use case constructs infrastructure"]
+        BADUSECASE["GenerateText"] -. "should not create" .-> BADADAPTER["GeminiAdapter"]
+    end
 ```
 
 Injection improves substitution, testing, configuration, and lifecycle control.
 
-## Interface-Driven Design
+### Interface-Driven Design
 
 The application is designed around required behavior instead of a specific library.
 
@@ -742,7 +721,7 @@ The interface should be:
 - aligned with application use cases,
 - stable enough to support multiple implementations.
 
-## Single Responsibility
+### Single Responsibility
 
 Each component has one primary reason to change.
 
@@ -757,7 +736,7 @@ Each component has one primary reason to change.
 
 ---
 
-# 12. Design Decisions
+## 12. Design Decisions
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
@@ -772,7 +751,7 @@ Each component has one primary reason to change.
 | Basic tests first | Verifies construction and configuration boundaries | Does not yet prove request behavior |
 | Empty domain package | Preserves room for future domain concepts | Current project may appear structurally larger than its behavior |
 
-## Port Granularity
+### Port Granularity
 
 A single `generate(prompt: str) -> str` operation is suitable for the present scope.
 
@@ -791,16 +770,16 @@ The port should evolve from real application requirements rather than mirror eve
 
 ---
 
-# 13. Testing Strategy
+## 13. Testing Strategy
 
 The test suite should prove both deterministic architecture behavior and provider-boundary behavior.
 
-## Current Coverage
+### Current Coverage
 
-The supplied project notes identify current tests for:
+The uploaded repository contains two tests:
 
-- settings configuration,
-- Gemini adapter initialization.
+- `test_settings.py` verifies that provider configuration exists, timeout is positive, and a Gemini key is available;
+- `test_gemini.py` performs a credentialed live Gemini request and verifies that the returned value is a non-empty string.
 
 Run:
 
@@ -808,15 +787,9 @@ Run:
 pytest
 ```
 
-Example project output:
+The active repository run is the source of truth for pass counts. The uploaded `pyproject.toml` does not declare the runtime or test dependencies, so `pip install -e .` alone is not sufficient in a clean environment.
 
-```text
-2 passed
-```
-
-The active repository run should remain the source of truth for current pass counts.
-
-## Component Coverage
+### Component Coverage
 
 | Component | Required Cases |
 |---|---|
@@ -828,9 +801,9 @@ The active repository run should remain the source of truth for current pass cou
 | CLI | Valid prompt, configuration failure, provider failure, visible output |
 | Async behavior | Awaited execution and cancellation/timeout behavior |
 
-## Unit Test With a Fake Port
+### Recommended Unit Test With a Fake Port
 
-A use-case test should not require Gemini credentials or network access.
+The current repository does not include this test. It is the highest-value next test because it can verify `GenerateText` without credentials or network access.
 
 Conceptually:
 
@@ -840,7 +813,7 @@ class FakeLLM:
         return f"fake:{prompt}"
 
 
-async def test_generate_text_uses_port():
+async def test_generate_text_uses_port() -> None:
     use_case = GenerateText(llm=FakeLLM())
 
     result = await use_case.execute("Hello")
@@ -850,7 +823,7 @@ async def test_generate_text_uses_port():
 
 This test proves application behavior independently of the provider SDK.
 
-## Adapter Test Boundary
+### Adapter Test Boundary
 
 Adapter tests should verify translation behavior without making uncontrolled live requests.
 
@@ -861,19 +834,17 @@ Useful techniques include:
 - using recorded fixtures where permitted,
 - separating unit tests from live smoke tests.
 
-## Test Pyramid
+### Test Pyramid
 
-```text
-many fast unit tests
-        ↓
-fewer adapter integration tests
-        ↓
-minimal live provider smoke tests
+```mermaid
+flowchart TD
+    UNIT["Many Fast Unit Tests"] --> INTEGRATION["Fewer Adapter Integration Tests"]
+    INTEGRATION --> SMOKE["Minimal Live Provider Smoke Tests"]
 ```
 
 Live tests should be explicitly marked because they consume credentials, network access, time, and potentially money.
 
-## Boundary Matrix
+### Boundary Matrix
 
 | Case | Expected Result |
 |---|---|
@@ -890,11 +861,17 @@ Live tests should be explicitly marked because they consume credentials, network
 
 ---
 
-# 14. Error Boundary
+## 14. Error Boundary
 
-Provider failures should not leak uncontrolled SDK exception types across the entire application.
+The current adapter provides three explicit validation errors:
 
-A future stable error model may include:
+| Condition | Current Exception |
+|---|---|
+| Missing `GEMINI_API_KEY` | `ValueError` during adapter construction |
+| Empty prompt | `ValueError` before the provider call |
+| Empty provider text | `RuntimeError` after the provider call |
+
+Other provider SDK exceptions currently pass through unchanged. A future stable error model may include:
 
 ```text
 LLMConfigurationError
@@ -913,7 +890,7 @@ flowchart LR
     APPERROR --> INTERFACE["CLI Presentation"]
 ```
 
-## Error Ownership
+### Error Ownership
 
 | Failure | Owner |
 |---|---|
@@ -929,7 +906,7 @@ The CLI should display useful information without exposing API keys, internal st
 
 ---
 
-# 15. Security and Data Handling
+## 15. Security and Data Handling
 
 An LLM gateway crosses a trust boundary between product input and an external provider.
 
@@ -963,18 +940,16 @@ estimated_cost
 
 Raw prompts and responses should not be logged by default when they may contain private or business-sensitive information.
 
-## Secret Management
+### Secret Management
 
-```text
-Local development:
-.env file ignored by Git
-
-CI/CD:
-encrypted repository or platform secrets
-
-Production:
-managed secret store with rotation and access control
+```mermaid
+flowchart LR
+    LOCAL["Local Development<br/>Untracked .env"] --> APP["Application Settings"]
+    CI["CI/CD Secret Store"] --> APP
+    PROD["Managed Production Secret Store"] --> APP
 ```
+
+In the uploaded archive, `.env` is present and `.gitignore` does not list it. Treat this as a release-safety issue: remove the file from any public artifact, add the ignore rule, and rotate keys if they were committed.
 
 A real API key must never appear in:
 
@@ -988,9 +963,9 @@ A real API key must never appear in:
 
 ---
 
-# 16. Production Considerations
+## 16. Production Considerations
 
-## Provider Factory
+### Provider Factory
 
 A provider factory should map validated configuration to a concrete adapter.
 
@@ -1001,11 +976,9 @@ def build_llm(settings: Settings) -> LLMPort:
     raise UnsupportedProviderError(settings.llm_provider)
 ```
 
-The factory is a construction mechanism.
+The factory is a construction mechanism; it should not contain prompt policy or application workflow logic.
 
-It should not contain prompt policy or application workflow logic.
-
-## Timeouts
+### Timeouts
 
 `LLM_TIMEOUT_SECONDS` should become an enforced runtime policy rather than a documented setting only.
 
@@ -1017,7 +990,7 @@ Timeout behavior should define:
 - retry eligibility,
 - user-facing error mapping.
 
-## Retries
+### Retries
 
 Retries should be limited to failures that may succeed on a later attempt.
 
@@ -1041,7 +1014,7 @@ Retry policy should include:
 - request idempotency,
 - cost impact.
 
-## Provider Failover
+### Provider Failover
 
 Provider failover is not merely an additional `try/except`.
 
@@ -1059,25 +1032,21 @@ Different providers may vary in:
 
 Failover requires an explicit compatibility and product policy.
 
-## Streaming
+### Streaming
 
 Streaming changes the port contract from one returned string to a sequence of events or chunks.
 
-```text
-request
-   ↓
-stream start
-   ↓
-content chunks
-   ↓
-usage metadata
-   ↓
-completion or failure
+```mermaid
+flowchart LR
+    REQUEST["Request"] --> START["Stream Start"]
+    START --> CHUNKS["Content Chunks"]
+    CHUNKS --> USAGE["Usage Metadata"]
+    USAGE --> END["Completion or Failure"]
 ```
 
 A streaming port may be separate from the simple text-generation port to avoid forcing all implementations into one interface.
 
-## Observability
+### Observability
 
 Production telemetry should measure:
 
@@ -1095,7 +1064,7 @@ Production telemetry should measure:
 
 Metrics should use stable application error codes rather than arbitrary SDK exception strings.
 
-## Lifecycle Management
+### Lifecycle Management
 
 Provider clients may hold HTTP sessions, connection pools, or other resources.
 
@@ -1110,38 +1079,9 @@ A production composition root should define:
 
 ---
 
-# 17. Integration With Related Projects
+## 17. Integration With Related Projects
 
-The gateway can become the provider-execution boundary for other AI product engineering components.
-
-## Prompt Contract Integration
-
-```mermaid
-flowchart LR
-    CONTRACT["Prompt Contract"] --> VALIDATE["Validate and Render"]
-    VALIDATE --> PROMPT["Rendered Prompt"]
-    PROMPT --> GATEWAY["LLM Gateway"]
-    GATEWAY --> PROVIDER["Provider Adapter"]
-```
-
-The Prompt Contract component should prepare deterministic provider input.
-
-The gateway should execute it.
-
-## Request Budget Guard Integration
-
-```mermaid
-flowchart LR
-    REQUEST["LLM Request"] --> BUDGET["Request Budget Guard"]
-    BUDGET --> DECISION{"Accepted?"}
-    DECISION -->|No| REJECT["Budget Error"]
-    DECISION -->|Yes| GATEWAY["LLM Gateway"]
-    GATEWAY --> PROVIDER["Provider"]
-```
-
-The Budget Guard should reject oversized or over-budget requests before the gateway spends tokens or money.
-
-## Combined Product Pipeline
+The gateway can serve as the provider-execution boundary for related AI product engineering components.
 
 ```mermaid
 flowchart TD
@@ -1155,35 +1095,31 @@ flowchart TD
     VALIDATOR --> PRODUCT["Product Response"]
 ```
 
-Each component owns a distinct boundary:
+| Component | Responsibility | Boundary Outcome |
+|---|---|---|
+| Prompt Contract | Define, validate, and render deterministic provider input | Rendered prompt or validation error |
+| Request Budget Guard | Enforce context, token, and cost policy | Accepted request or budget error |
+| LLM Gateway | Abstract and execute provider communication | Provider-independent response |
+| Response Validator | Verify output shape, evidence, and policy | Validated result or response error |
+| Product Interface | Deliver the final result | User-facing response |
 
-| Component | Responsibility |
-|---|---|
-| Prompt Contract | Define and validate prompt construction |
-| Request Budget Guard | Enforce context and cost policy |
-| LLM Gateway | Abstract and execute provider communication |
-| Response Validator | Verify output shape and policy |
-| Product Interface | Deliver the final result |
+The Prompt Contract prepares deterministic provider input. The Request Budget Guard rejects oversized or over-budget requests before provider execution. The gateway then executes the approved request without taking ownership of prompt policy or response validation.
 
 ---
 
-# 18. Evaluation Boundary
+## 18. Evaluation Boundary
 
 Unit and integration tests answer:
 
-```text
-Did the application call the configured provider boundary correctly?
-```
+> **Engineering tests:** Did the application call the configured provider boundary correctly?
 
 Model evaluations answer:
 
-```text
-Did the selected provider and model produce an acceptable response?
-```
+> **Model evaluations:** Did the selected provider and model produce an acceptable response?
 
 These are different questions.
 
-## Engineering Tests
+### Engineering Tests
 
 - Was the prompt forwarded correctly?
 - Was the adapter selected correctly?
@@ -1192,7 +1128,7 @@ These are different questions.
 - Was configuration validated?
 - Did the call respect the timeout?
 
-## Model Evaluations
+### Model Evaluations
 
 - Was the answer accurate?
 - Did the model follow instructions?
@@ -1219,65 +1155,63 @@ cost
 error_code
 ```
 
-The gateway enables provider substitution, but evaluations determine whether a substitution is acceptable for the product.
+The gateway enables provider substitution; evaluations determine whether that substitution is acceptable for the product.
 
 ---
 
-# 19. Current Limitations
+## 19. Current Limitations
 
-- Only Google Gemini is implemented.
-- Provider factory behavior is not yet established as a complete multi-provider system.
-- Test coverage is currently limited.
-- Retry behavior is not implemented.
-- Enforced timeout handling is not demonstrated.
-- Streaming responses are not implemented.
-- Structured output is not modeled.
-- Provider error translation is not defined.
-- Logging and metrics are not implemented.
-- Token usage is not recorded.
-- Cost tracking is not implemented.
-- Rate limiting is not implemented.
-- Provider failover is not implemented.
-- Prompt Contract integration is not implemented.
-- Request Budget Guard integration is not implemented.
-- Response validation is not implemented.
-- Persistent request history is not implemented.
-- Authentication and authorization are not implemented for a service interface.
-- The current interface is CLI-only.
-- The domain layer does not yet contain substantial domain behavior.
+The project is intentionally scoped as an architectural learning implementation rather than a production gateway.
 
-These constraints define the current project boundary. They should not be presented as implemented production capabilities.
+| Area | Current Limitation |
+|---|---|
+| Provider support | Only Gemini is implemented, and the CLI constructs it directly |
+| Configuration | `LLM_PROVIDER` and `GROQ_API_KEY` are loaded but not used for provider resolution |
+| Timeout | `LLM_TIMEOUT_SECONDS` is parsed but not enforced |
+| Model configuration | The Gemini model identifier is hard-coded inside `GeminiAdapter` |
+| Reliability | Retries, rate limiting, cancellation policy, and provider failover are not implemented |
+| Response capabilities | Streaming, structured output, response validation, and usage metadata are not modeled |
+| Error handling | Provider SDK exceptions are not translated into stable application-level errors |
+| Observability | Logging, metrics, tracing, token usage, and cost tracking are not implemented |
+| Testing | The suite has one settings test and one live provider test; no fake-port use-case test exists |
+| Packaging | Runtime and test dependencies are not declared in `pyproject.toml` |
+| Secret hygiene | The uploaded archive contains `.env`, and `.gitignore` does not currently exclude it |
+| Delivery | The current interface is CLI-only; no FastAPI service boundary exists |
+| Domain model | The domain package is present but contains no substantive domain behavior |
+| Licensing | No `LICENSE` file is present in the uploaded repository |
+
+These constraints define the current project boundary and must not be presented as implemented production capabilities.
 
 ---
 
-# 20. Future Improvements
+## 20. Future Improvements
 
 | Priority | Improvement | Engineering Outcome |
 |---:|---|---|
-| 1 | Use-case tests with a fake port | Verify application logic without network access |
-| 2 | Provider factory | Resolve adapters from validated configuration |
-| 3 | Stable error model | Prevent SDK exception leakage |
-| 4 | Enforced timeout policy | Bound request latency |
-| 5 | Retry with backoff and jitter | Recover from transient failures safely |
-| 6 | OpenAI adapter | Demonstrate provider substitution |
-| 7 | Groq adapter | Add another provider execution path |
-| 8 | Anthropic adapter | Expand provider compatibility |
-| 9 | Structured request model | Support model parameters without SDK leakage |
-| 10 | Streaming port | Deliver incremental model output |
-| 11 | Logging and metrics | Observe latency, failures, and provider behavior |
-| 12 | Token and cost tracking | Measure request consumption |
-| 13 | Prompt Contract integration | Add validated prompt preparation |
-| 14 | Request Budget Guard integration | Reject unsafe or expensive requests early |
-| 15 | Response validation | Enforce typed or schema-based outputs |
-| 16 | FastAPI interface | Expose the use case as a service |
-| 17 | Docker support | Standardize execution environments |
-| 18 | CI/CD | Automate tests, linting, typing, and release checks |
+| 1 | Remove `.env` from publishable artifacts and add `.env` to `.gitignore` | Prevent accidental credential exposure |
+| 2 | Add `.env.example` with placeholders | Document configuration without distributing secrets |
+| 3 | Declare runtime and test dependencies in `pyproject.toml` | Make clean installation reproducible |
+| 4 | Add a fake-port `GenerateText` unit test | Verify application behavior without network access |
+| 5 | Add configuration and CLI failure tests | Prove predictable invalid-input and missing-key behavior |
+| 6 | Move the model identifier into configuration | Remove a provider-specific deployment value from code |
+| 7 | Implement a provider factory | Make `LLM_PROVIDER` control adapter resolution |
+| 8 | Enforce request timeouts | Convert the timeout setting into runtime policy |
+| 9 | Define stable application errors | Prevent SDK exception leakage |
+| 10 | Add bounded retries with backoff and jitter | Recover from transient failures safely |
+| 11 | Add another provider adapter | Demonstrate actual provider substitution |
+| 12 | Add provider-independent streaming | Deliver incremental model output |
+| 13 | Add safe logging and metrics | Observe latency, failures, and provider behavior |
+| 14 | Track token usage and cost | Measure request consumption |
+| 15 | Add structured requests and response validation | Support typed AI product behavior |
+| 16 | Add FastAPI delivery | Expose the use case as a service |
+| 17 | Add Docker and CI/CD | Standardize installation, testing, and delivery |
+| 18 | Add a repository license | Clarify public-use and contribution terms |
 
-Additional candidates include provider health checks, circuit breakers, concurrency control, caching, model routing, provider failover, usage quotas, tracing, secret-manager integration, and evaluation-driven provider selection.
+Additional candidates include provider health checks, circuit breakers, concurrency control, caching, model routing, usage quotas, tracing, secret-manager integration, and evaluation-driven provider selection.
 
 ---
 
-# 21. Key Takeaways
+## 21. Key Takeaways
 
 - Application use cases should depend on provider capabilities, not provider SDKs.
 - `LLMPort` defines what the application needs.
@@ -1296,7 +1230,7 @@ Additional candidates include provider health checks, circuit breakers, concurre
 
 ---
 
-# 22. Learning Outcomes
+## 22. Learning Outcomes
 
 Through this project, I learned:
 
@@ -1311,97 +1245,88 @@ Through this project, I learned:
 - how async provider calls fit into an application workflow,
 - how to organize a Python project using a professional `src/` layout,
 - how to prepare an application for additional providers,
-- how unit tests can replace external providers with fakes,
+- how the port design enables future unit tests to replace external providers with fakes,
 - why production reliability requires more than a working SDK call.
 
 ---
 
-# 23. Project Completion Gate
+## 23. Project Completion Gate
 
-```text
-IMPLEMENTATION
-[ ] LLMPort contract defined
-[ ] GenerateText use case implemented
-[ ] GeminiAdapter implemented
-[ ] Environment settings implemented
-[ ] Typer CLI implemented
-[ ] Async provider call working
+Every checkbox below is checked because this gate covers only the implemented **v0.1.0 repository scope**. Planned production work remains in [Future Improvements](#20-future-improvements) and is not part of this completion claim.
 
-VERIFICATION
-[ ] Settings tests passing
-[ ] Adapter initialization test passing
-[ ] Use case tested with a fake port
-[ ] Prompt forwarding verified
-[ ] Provider response extraction verified
-[ ] Configuration failures verified
-[ ] CLI success path verified
-[ ] CLI failure path verified
+### Implementation
 
-ARCHITECTURE
-[ ] Application does not import Gemini SDK
-[ ] Provider details remain inside infrastructure
-[ ] Dependency injection occurs at the composition boundary
-[ ] Interface remains thin
-[ ] Secrets remain outside source control
+- [x] `LLMPort` protocol is defined
+- [x] `GenerateText` depends on `LLMPort`
+- [x] `GeminiAdapter` provides asynchronous text generation
+- [x] Missing-key, empty-prompt, and empty-response validation paths exist
+- [x] Environment settings are loaded through `python-dotenv`
+- [x] Typer CLI accepts a prompt and prints the provider-independent string
+- [x] The CLI constructs and injects the concrete adapter
 
-PRODUCTION UNDERSTANDING
-[ ] Timeout policy understood
-[ ] Retry policy understood
-[ ] Provider error translation understood
-[ ] Streaming contract impact understood
-[ ] Cost and token tracking boundary understood
-[ ] Prompt Contract integration boundary understood
-[ ] Request Budget Guard integration boundary understood
-```
+### Repository Test Assets
 
-The checklist should be updated from the active repository state rather than marked complete only because the architecture is documented.
+- [x] Pytest is configured for the `src/` layout
+- [x] A settings configuration test exists
+- [x] A credentialed live Gemini generation test exists
+- [x] The live test verifies a non-empty string response
+- [x] Async test execution is configured with the AnyIO backend fixture
+
+### Architecture
+
+- [x] The application use case does not import the Gemini SDK
+- [x] The provider contract is owned by the application boundary
+- [x] Gemini SDK usage remains inside infrastructure
+- [x] Provider response objects are normalized to `str` before returning to the application
+- [x] Dependency injection occurs in the CLI composition boundary
+- [x] The project uses a professional `src/` package layout
+
+### Documentation
+
+- [x] Current behavior is separated from planned behavior
+- [x] Repository limitations are stated explicitly
+- [x] Design decisions and trade-offs are documented
+- [x] Testing and production boundaries are documented
+- [x] All architectural and runtime flows are represented with Mermaid diagrams
+- [x] The completion checklist contains no unfinished items outside the declared v0.1.0 scope
 
 ---
 
-# 24. Final Recall Map
+## 24. Final Recall Map
 
 ```mermaid
 flowchart TD
-    A["LLM REQUEST"] --> B["RECEIVE"]
-    B --> C["CONFIGURE"]
-    C --> D["RESOLVE"]
-    D --> E["ADAPT"]
-    E --> F["EXECUTE"]
-    F --> G["RETURN"]
+    A["LOAD SETTINGS"] --> B["RECEIVE PROMPT"]
+    B --> C["CONSTRUCT GEMINI ADAPTER"]
+    C --> D["INJECT INTO GENERATE TEXT"]
+    D --> E["VALIDATE PROMPT"]
+    E --> F["AWAIT GEMINI REQUEST"]
+    F --> G["VALIDATE RESPONSE TEXT"]
+    G --> H["RETURN STR"]
+    H --> I["DISPLAY CLI OUTPUT"]
 
-    B -.-> B1["Accept input through an interface"]
-    C -.-> C1["Load validated environment settings"]
-    D -.-> D1["Select and construct the provider adapter"]
-    E -.-> E1["Translate through LLMPort"]
-    F -.-> F1["Await the provider call"]
-    G -.-> G1["Return provider-independent text"]
+    A -.-> A1["Load .env and process environment"]
+    C -.-> C1["Read GEMINI_API_KEY"]
+    D -.-> D1["Use GeminiAdapter through LLMPort"]
+    F -.-> F1["Call Google GenAI async SDK"]
+    H -.-> H1["Keep provider response objects in infrastructure"]
 ```
 
-## Memory Hook
+### Memory Hook
 
-```text
-RECEIVE
-→ accept the prompt
-
-CONFIGURE
-→ load valid settings
-
-RESOLVE
-→ construct the selected provider
-
-ADAPT
-→ translate application intent
-
-EXECUTE
-→ call the external model
-
-RETURN
-→ expose an application-level result
-```
+| Stage | Recall |
+|---|---|
+| Load | Read environment-backed settings |
+| Receive | Accept the CLI prompt |
+| Construct | Create `GeminiAdapter` |
+| Inject | Supply the adapter to `GenerateText` |
+| Execute | Await `generate(prompt)` |
+| Normalize | Return provider-independent text |
+| Display | Print the final string |
 
 ---
 
-# 25. Interview Recall
+## 25. Interview Recall
 
 You should be able to answer these without notes:
 
@@ -1428,40 +1353,20 @@ You should be able to answer these without notes:
 
 ---
 
-# 26. Project Status
+## 26. Project Status
 
-```text
-IMPLEMENTED
-→ LLMPort abstraction
-→ GenerateText application use case
-→ Gemini provider adapter
-→ Environment-based configuration
-→ Typer CLI
-→ Async provider request path
+| Status | Repository Evidence |
+|---|---|
+| **Current scope complete** | `LLMPort`, `GenerateText`, `GeminiAdapter`, environment settings, Typer CLI, async request path |
+| **Test assets present** | Settings test and credentialed live Gemini generation test |
+| **Documented but not implemented** | Dynamic provider resolution, enforced timeout, retries, stable errors, streaming, observability, cost tracking, and FastAPI delivery |
+| **Before public release** | Remove `.env` from publishable artifacts, add ignore/example files, declare dependencies, and add a license |
 
-CURRENTLY VERIFIED
-→ Settings configuration
-→ Gemini adapter initialization
-→ Basic CLI execution path described by the project
-
-NOT YET IMPLEMENTED
-→ Multiple provider adapters
-→ Provider factory
-→ Stable provider error model
-→ Retry mechanism
-→ Enforced timeout handling
-→ Streaming
-→ Logging and observability
-→ Token and cost tracking
-→ Prompt Contract integration
-→ Request Budget Guard integration
-→ Response-schema validation
-→ FastAPI service boundary
-```
+The v0.1.0 architectural learning scope is complete. Production hardening and release hygiene remain separate follow-up work.
 
 ---
 
-# Conclusion
+## Conclusion
 
 LLM Gateway demonstrates how an AI application can communicate with an external model provider without allowing provider-specific code to control the application architecture.
 
@@ -1475,6 +1380,6 @@ Its value is architectural: the project establishes a clean provider boundary th
 
 ---
 
-# License
+## License
 
-MIT License.
+No `LICENSE` file is present in the uploaded repository. Add the intended license before public distribution.
