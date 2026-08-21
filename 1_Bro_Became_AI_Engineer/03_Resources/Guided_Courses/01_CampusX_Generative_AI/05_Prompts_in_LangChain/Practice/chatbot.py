@@ -1,24 +1,32 @@
 from model import client
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-chat_history = []
+chat_history = [
+    SystemMessage(
+        content="You are a helpful AI assistant"
+    ),
+]
 
 while True:
-    print("Bot: ", end="", flush=True)
-    
+    print("You: ", end="", flush=True)
     user_prompt = input()
+
+    print("AI: ", end="", flush=True)
 
     output = ""
 
-    print("Ai: ", end="", flush=True)
-    for chuck in client.stream(user_prompt):
-        if chuck.content:
-            output += chuck.content
-            print(chuck.content,end="",flush=True)
+    for chunk in client.stream(chat_history):
+        if chunk.content:
+            output += chunk.content
+            print(chunk.content, end="", flush=True)
 
-    chat_history.append(output)
+    chat_history.extend([
+        HumanMessage(
+            content=user_prompt
+        ),
+        AIMessage(
+            content=output
+        )
+    ])
+
     print()
-
-
-    # print(chat_history)
-
-    
