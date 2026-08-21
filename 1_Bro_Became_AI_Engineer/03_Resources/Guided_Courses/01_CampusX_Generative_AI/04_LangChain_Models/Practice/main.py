@@ -4,13 +4,13 @@ import os
 
 load_dotenv()
 
-client = ChatGroq(
+classifier_model = ChatGroq(
     model=os.getenv("GROQ_MODEL"),
     api_key=os.getenv("GROQ_API_KEY"),
     temperature=0
 )
 
-Role = """ROLE:
+ROLE = """ROLE:
 You are a temperature classifier for an LLM.
 
 TASK:
@@ -28,14 +28,22 @@ No explanation.
 No words.
 No JSON.
 """
-    
+
+
 def choose_temperature(user_prompt: str) -> float:
 
-    response = client.invoke(
-        f"{Role}\nUSER PROMPT: {user_prompt}"
+    response = classifier_model.invoke(
+        f"{ROLE}\nUSER PROMPT: {user_prompt}"
     )
 
-    return float(response.content.strip())
+    content = response.content.strip()
+
+    try:
+        temperature = float(content)
+    except ValueError:
+        temperature = 0.3
+
+    return max(0.0, min(0.9, temperature))
 
 
 def ask_model(user_prompt: str):
@@ -48,10 +56,9 @@ def ask_model(user_prompt: str):
         temperature=temperature,
     )
 
-    response = model.stream(user_prompt)
-
-    for chunk in response:
+    for chunk in model.stream(user_prompt):
         yield chunk.content
+
 
 def main():
 
