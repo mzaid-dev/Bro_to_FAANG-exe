@@ -1,16 +1,6 @@
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-import os
 import streamlit as st
 from langchain_core.prompts import load_prompt
-
-load_dotenv()
-
-client = ChatGroq(
-    model="openai/gpt-oss-120b",
-    api_key=os.getenv("GROQ_API_KEY"),
-    max_retries=2
-)
+from model import client
 
 st.header("Research Tool")
 
