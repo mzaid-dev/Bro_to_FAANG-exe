@@ -6,7 +6,7 @@ chat_template = ChatPromptTemplate([
         'system', 'You are a helpfull {domain} expert'
     ),
     (
-        'human',"Explain in simple terms, what is {topic}"
+        'humant',"Explain in simple terms, what is {topic}"
     )
 ])
 
