@@ -16,4 +16,4 @@ prompt = chat_template.invoke({
     'topic' : 'What is decorator in python'
 })
 
-print(prompt)
+print(prompt)   
