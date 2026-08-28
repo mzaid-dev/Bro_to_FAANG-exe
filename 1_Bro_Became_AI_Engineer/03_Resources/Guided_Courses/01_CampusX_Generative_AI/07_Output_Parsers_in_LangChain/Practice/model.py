@@ -5,10 +5,13 @@ import os
 load_dotenv()
 
 llm = HuggingFaceEndpoint(
-    repo_id="Qwen/Qwen3-4B-Instruct-2507",
+    repo_id="openai/gpt-oss-20b",
     task="text-generation",
     huggingfacehub_api_token=os.getenv("HF_TOKEN")
 )
 
 client = ChatHuggingFace(llm = llm)
+
+
+# print(client.invoke("hi"))
 
