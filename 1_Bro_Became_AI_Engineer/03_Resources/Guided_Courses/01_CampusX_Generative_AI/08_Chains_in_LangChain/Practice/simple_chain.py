@@ -9,10 +9,13 @@ template = PromptTemplate(
     input_variables=['topic']
 )
 
-# without chain
+# without chain 
+# prompt = template.invoke({"topic":"cricket"})
+# result = client.invoke(prompt)
+# final_result = parser.invoke(result)
 
-prompt = template.invoke({"topic":"cricket"})
+# with chain 
 
-result = client.invoke(prompt)
+chain = template | client | parser
 
-final_result = parser.invoke(result)
+print(chain.invoke({'topic':'LLM evaluation'}))
