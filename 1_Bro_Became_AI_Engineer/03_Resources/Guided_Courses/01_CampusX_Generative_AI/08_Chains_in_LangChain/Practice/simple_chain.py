@@ -20,4 +20,4 @@ chain = template | client | parser
 
 print(chain.invoke({'topic':'LLM evaluation'}))
 
-print(chain.get_graph().draw_ascii)
+# print(chain.get_graph().draw_ascii)
